@@ -12,7 +12,10 @@ function App() {
     dealCards,
     hit,
     stand,
-    error
+    error,
+    activeRooms, // Get activeRooms from hook
+    placeBet,
+    startNextRound
   } = useGame();
 
   return (
@@ -34,17 +37,20 @@ function App() {
 
       {!roomId || !gameState ? (
         <div className="relative z-10 min-h-screen flex items-center justify-center">
-          <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} />
+          <Lobby onCreateRoom={createRoom} onJoinRoom={joinRoom} activeRooms={activeRooms} />
         </div>
       ) : (
         <div className="relative z-10 h-screen">
           <Table
+            roomId={roomId}
             gameState={gameState}
             playerId={playerId}
             onHit={hit}
             onStand={stand}
             onDeal={dealCards}
             onReset={() => window.location.reload()} // Quick reset hack
+            placeBet={placeBet}
+            startNextRound={startNextRound}
           />
         </div>
       )}

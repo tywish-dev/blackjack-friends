@@ -6,11 +6,12 @@ import { getDatabase } from "firebase/database";
 const firebaseConfig = {
     apiKey: "AIzaSyCs1bj513Ra5y_PjgszfSBQHJ62RpYbF4o",
     authDomain: "blackjack-friends.firebaseapp.com",
-    databaseURL: "https://blackjack-friends-default-rtdb.europe-west1.firebasedatabase.app/",
+    databaseURL: "https://blackjack-friends-default-rtdb.europe-west1.firebasedatabase.app",
     projectId: "blackjack-friends",
     storageBucket: "blackjack-friends.firebasestorage.app",
     messagingSenderId: "320816606306",
-    appId: "1:320816606306:web:6defe34ad12fe22860353b"
+    appId: "1:320816606306:web:6defe34ad12fe22860353b",
+    measurementId: "G-HBEFK0SKY2"
 };
 
 const app = initializeApp(firebaseConfig);
