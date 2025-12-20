@@ -66,6 +66,43 @@ export const useGame = () => {
     // Sync game state
     // Sync game state & Host Migration
     useEffect(() => {
+        if (!roomId || !gameState) return;
+        const me = gameState.players?.[playerId];
+        if (!me?.isHost) return;
+
+        if (gameState.turn === 'dealer_turn') {
+            const dealerHand = gameState.dealer.hand || [];
+            const dealerScore = calculateScore(dealerHand);
+
+            // Dealer Logic
+            if (dealerScore < 17) {
+                // Dealer Hit with Delay
+                const timer = setTimeout(async () => {
+                    const currentDeck = [...gameState.deck];
+                    const newCard = currentDeck.pop();
+                    const newHand = [...dealerHand, newCard];
+                    const newScore = calculateScore(newHand);
+
+                    const updates = {};
+                    updates[`rooms/${roomId}/dealer/hand`] = newHand;
+                    updates[`rooms/${roomId}/dealer/score`] = newScore;
+                    updates[`rooms/${roomId}/deck`] = currentDeck;
+
+                    await update(ref(db), updates);
+                }, 1000);
+                return () => clearTimeout(timer);
+            } else {
+                // Dealer Finished - Calculate Results
+                const timer = setTimeout(async () => {
+                    await finalizeRound();
+                }, 500); // Short delay before payout
+                return () => clearTimeout(timer);
+            }
+        }
+    }, [gameState?.turn, gameState?.dealer?.score, roomId]); // Re-run when turn is dealer or score changes
+
+    // Host Migration & Sync
+    useEffect(() => {
         if (!roomId) return;
         const gameRef = ref(db, `rooms/${roomId}`);
         const unsubscribe = onValue(gameRef, (snapshot) => {
@@ -73,28 +110,22 @@ export const useGame = () => {
             if (data) {
                 setGameState(data);
 
-                // Host Migration: If no host, promote oldest player
+                // Host Migration
                 if (data.players) {
                     const playerIds = Object.keys(data.players);
                     const hasHost = playerIds.some(id => data.players[id].isHost);
 
                     if (!hasHost && playerIds.length > 0) {
-                        // Sort by joinedAt to find oldest
                         const sortedIds = playerIds.sort((a, b) => {
                             return (data.players[a].joinedAt || 0) - (data.players[b].joinedAt || 0);
                         });
-
                         const newHostId = sortedIds[0];
-
-                        // If I am the new host candidate, claim it
                         if (newHostId === playerId) {
-                            update(ref(db, `rooms/${roomId}/players/${playerId}`), { isHost: true })
-                                .catch(console.error);
+                            update(ref(db, `rooms/${roomId}/players/${playerId}`), { isHost: true }).catch(console.error);
                         }
                     }
                 }
-            }
-            else setError('Room not found');
+            } else setError('Room not found');
         });
         return () => unsubscribe();
     }, [roomId, playerId]);
@@ -251,13 +282,59 @@ export const useGame = () => {
             // For now, let's keep standard flow, but if Dealer has BJ, we might auto-resolve.
             // Actually, if Dealer has BJ, players don't get to hit.
         } else {
-            updates[`rooms/${roomId}/turn`] = sortedPlayerIds[0];
+            // Find first player without Blackjack
+            let firstPlayerIndex = 0;
+            let foundPlayer = false;
+            while (firstPlayerIndex < sortedPlayerIds.length) {
+                const pid = sortedPlayerIds[firstPlayerIndex];
+                const pHand = updates[`rooms/${roomId}/players/${pid}/hands`][0];
+                if (pHand.status === 'playing') {
+                    updates[`rooms/${roomId}/turn`] = pid;
+                    foundPlayer = true;
+                    break;
+                }
+                firstPlayerIndex++;
+            }
+
+            // If all players have Blackjack, go straight to dealer resolution
+            if (!foundPlayer) {
+                // We need to pass the state as it WILL be, not as it is. 
+                // However, for clean state management, we can trigger resolution immediately.
+                // But calculateResolution expects deck/players input.
+                // We have the new deck in `currentDeck`.
+                // We have the new player states in `updates`. 
+                // Constructing the full state object effectively to pass to `calculateResolution` is a bit complex here because `updates` is flat.
+
+                // Simpler approach: Just like Dealer has BJ, we end the round.
+                // But we need to play dealer hand if needed (soft 17).
+                // Let's defer to a pseudo-turn that triggers resolution? 
+                // Or just replicate calculateResolution logic here for the 'All BJ' case? 
+
+                // Actually, if everyone has BJ, the Dealer still plays to try to beat 21 (impossible) or push 21?
+                // Dealer must play out their hand.
+                // So we can assign turn to 'dealer_play' which triggers an effect? No, better to do it now.
+
+                // Let's re-use calculateResolution logic but we need to re-assemble player objects from updates
+                // This is slightly messy. 
+                // Alternative: Set turn to 'finished' and handle resolution? No.
+
+                // Let's look at calculateResolution helper. It takes `playersData`.
+                // We can construct a temporary playersData.
+                const tempPlayers = {};
+                sortedPlayerIds.forEach(pid => {
+                    tempPlayers[pid] = {
+                        ...gameState.players[pid],
+                        hands: updates[`rooms/${roomId}/players/${pid}/hands`],
+                        balance: gameState.players[pid].balance, // Balance doesn't change on deal
+                        bet: gameState.players[pid].bet
+                    };
+                });
+
+                updates[`rooms/${roomId}/turn`] = 'dealer_turn'; // Trigger Dealer Animation Effect
+            }
+
         }
 
-        // Turn goes to first player always (Standard Blackjack)
-        // Even if they have Blackjack, we usually let them "reveal" it or auto-stand in UI.
-        // For simplicity here, just give them turn.
-        updates[`rooms/${roomId}/turn`] = sortedPlayerIds[0];
 
         await update(ref(db), updates);
     };
@@ -269,29 +346,19 @@ export const useGame = () => {
     };
 
     // Calculate Resolution (Dealer Play & Payouts)
-    const calculateResolution = (deck, playersData, dealerHandIn) => {
-        let currentDeck = [...deck];
-        let dealerHand = [...dealerHandIn];
-        let dealerScore = calculateScore(dealerHand);
-
-        // Dealer hits soft 17 (Convention: Stand on Soft 17 usually, but requested "Real Rules" often imply Stand on Soft 17)
-        while (dealerScore < 17) {
-            dealerHand.push(currentDeck.pop());
-            dealerScore = calculateScore(dealerHand);
-        }
+    // Finalize Round (Payouts) - NOW SEPARATE FROM CARD DRAWS
+    const finalizeRound = async () => {
+        if (!roomId || !gameState) return;
+        const dealerScore = gameState.dealer.score;
+        const dealerHand = gameState.dealer.hand;
 
         const resolutionUpdates = {};
-        resolutionUpdates[`rooms/${roomId}/dealer/hand`] = dealerHand;
-        resolutionUpdates[`rooms/${roomId}/dealer/score`] = dealerScore;
         resolutionUpdates[`rooms/${roomId}/status`] = 'finished';
         resolutionUpdates[`rooms/${roomId}/turn`] = 'finished';
-        resolutionUpdates[`rooms/${roomId}/deck`] = currentDeck;
 
-        Object.keys(playersData).forEach(pid => {
-            const p = playersData[pid];
+        Object.keys(gameState.players).forEach(pid => {
+            const p = gameState.players[pid];
             const hands = p.hands || [];
-
-            // Calculate total balance update
             let totalWin = 0;
 
             hands.forEach((hand) => {
@@ -301,32 +368,30 @@ export const useGame = () => {
                 const pBet = hand.bet;
 
                 if (pStatus === 'blackjack') {
-                    if (dealerScore === 21 && dealerHand.length === 2 && calculateScore([dealerHand[0], dealerHand[1]]) === 21) { // Dealer BJ check
-                        winAmount = pBet; // Push
+                    if (dealerScore === 21 && dealerHand.length === 2 && calculateScore([dealerHand[0], dealerHand[1]]) === 21) {
+                        winAmount = pBet;
                     } else {
                         winAmount = pBet + (pBet * 1.5);
                     }
                 } else if (pStatus === 'busted') {
                     winAmount = 0;
                 } else {
-                    // Standing / Double
                     if (dealerScore > 21) {
                         winAmount = pBet * 2;
                     } else if (pScore > dealerScore) {
                         winAmount = pBet * 2;
                     } else if (pScore === dealerScore) {
-                        winAmount = pBet; // Push
+                        winAmount = pBet;
                     } else {
                         winAmount = 0;
                     }
                 }
                 totalWin += winAmount;
             });
-
             resolutionUpdates[`rooms/${roomId}/players/${pid}/balance`] = p.balance + totalWin;
         });
 
-        return resolutionUpdates;
+        await update(ref(db), resolutionUpdates);
     };
 
     const moveToNextStep = (currentDeck, currentPlayerId, currentPlayersState) => {
@@ -343,12 +408,21 @@ export const useGame = () => {
         const currentIndex = sortedPlayerIds.indexOf(currentPlayerId);
         let nextIndex = currentIndex + 1;
 
-        if (nextIndex < sortedPlayerIds.length) {
-            return { [`rooms/${roomId}/turn`]: sortedPlayerIds[nextIndex] };
-        } else {
-            // 3. Dealer Turn
-            return calculateResolution(currentDeck, currentPlayersState, gameState.dealer.hand);
+        while (nextIndex < sortedPlayerIds.length) {
+            const nextPid = sortedPlayerIds[nextIndex];
+            const nextPlayer = currentPlayersState[nextPid];
+
+            // Check if this player has any playable hands
+            if (getActiveHandIndex(nextPlayer) !== -1) {
+                return { [`rooms/${roomId}/turn`]: nextPid };
+            }
+            nextIndex++;
         }
+
+        // 3. Dealer Turn (If we exited loop, no more players)
+        // 3. Dealer Turn (If we exited loop, no more players)
+        // Switch to dealer turn to start animations
+        return { [`rooms/${roomId}/turn`]: 'dealer_turn' };
     };
 
     const hit = async () => {

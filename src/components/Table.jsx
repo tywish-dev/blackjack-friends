@@ -1,6 +1,7 @@
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
+import { useNotification } from '../contexts/NotificationContext';
 
 const PlayerArea = ({ player, isCurrentTurn, isMe }) => {
     // Robust fallback for hands
@@ -59,6 +60,16 @@ const PlayerArea = ({ player, isCurrentTurn, isMe }) => {
                 );
             })}
 
+            {/* Empty State Placeholder to prevent collapse */}
+            {hands.length === 0 && (
+                <div className="relative flex flex-col items-center rounded-xl p-2 transition-all min-w-[120px] opacity-30">
+                    <div className="w-24 h-36 border-2 border-dashed border-white/20 rounded-xl flex items-center justify-center">
+                        <span className="text-xs font-bold uppercase tracking-widest text-white/50">Ready</span>
+                    </div>
+                    <div className="mt-2 text-transparent font-mono text-lg font-bold">--</div>
+                </div>
+            )}
+
             <div className="absolute bottom-[-1.5rem] w-full text-center left-0">
                 <div className="font-bold text-white text-sm flex items-center gap-2 justify-center truncate w-full">
                     {isMe ? <span className="text-emerald-400 font-extrabold tracking-wider">YOU</span> : player.name}
@@ -70,6 +81,7 @@ const PlayerArea = ({ player, isCurrentTurn, isMe }) => {
 };
 
 const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, placeBet, startNextRound, onDouble, onSplit }) => {
+    const { showNotification } = useNotification();
     const players = gameState.players || {};
     // Consistent Sorting
     const sortedPlayers = Object.keys(players)
@@ -98,25 +110,26 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
 
             {/* 1. Dealer Area (Top) */}
             <div className="flex-none pt-4 pb-2 z-10 w-full flex justify-center">
-                <div className="bg-black/30 px-6 py-4 rounded-3xl border border-white/5 backdrop-blur-sm flex flex-col items-center gap-2 shadow-2xl transition-all hover:bg-black/40">
+                <div className="bg-black/30 px-6 py-4 rounded-3xl border border-white/5 backdrop-blur-sm flex flex-col items-center gap-2 shadow-2xl transition-all hover:bg-black/40 relative">
                     <div className="text-white/30 text-[10px] font-bold tracking-[0.3em] uppercase">Computer Dealer</div>
                     <div className="flex -space-x-12 min-h-[120px]">
                         <AnimatePresence>
-                            {dealer.hand && dealer.hand.map((card, idx) => (
-                                <div key={`dealer-${idx}`} className="relative transform hover:-translate-y-2 transition-transform">
-                                    {idx === 1 && !isFinished ? (
-                                        <div className="w-20 h-28 bg-red-900 rounded-xl shadow-xl border border-red-800/50 
-                                                flex items-center justify-center relative">
-                                            <div className="w-16 h-24 border-2 border-red-950 border-dashed rounded-lg opacity-30"></div>
-                                            <span className="absolute text-4xl text-red-950 opacity-50">♦</span>
-                                        </div>
-                                    ) : (
+                            {dealer.hand && dealer.hand.map((card, idx) => {
+                                // Face down logic: Index 1, not finished, and not dealer turn yet.
+                                // Actually, if it's dealer turn, we might want to reveal immediately or wait for the delay.
+                                // The requirement says "start of hand dealer draws card upside down... flip... others come from deck"
+                                // If it's `dealer_turn`, we should flip it. 
+                                // So face down if idx === 1 AND status != finished AND turn != dealer_turn
+                                const isFaceDown = idx === 1 && !isFinished && gameState.turn !== 'dealer_turn';
+
+                                return (
+                                    <div key={`dealer-${idx}`} className="relative transform hover:-translate-y-2 transition-transform">
                                         <div className="transform scale-90 origin-top">
-                                            <Card {...card} index={idx} textClass="text-sm" />
+                                            <Card {...card} index={idx} isFaceDown={isFaceDown} textClass="text-sm" />
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+                                    </div>
+                                );
+                            })}
                         </AnimatePresence>
                         {(!dealer.hand || dealer.hand.length === 0) && (
                             <div className="w-20 h-28 border-2 border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/10 font-mono text-sm">
@@ -124,11 +137,24 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
                             </div>
                         )}
                     </div>
-                    {isFinished && (
-                        <div className="text-white font-mono text-xl font-black bg-black/50 px-4 py-0.5 rounded-full border border-white/10 shadow-lg">{dealer.score}</div>
+                    {(isFinished || gameState.turn === 'dealer_turn') && (
+                        <div className="text-white font-mono text-xl font-black bg-black/50 px-4 py-0.5 rounded-full border border-white/10 shadow-lg animate-in fade-in zoom-in">{dealer.score}</div>
                     )}
+
+                    {/* Visual Deck - Absolute relative to dealer */}
+                    <div className="absolute right-[-100px] top-4 hidden md:block" style={{ transform: 'rotate(5deg)' }}>
+                        <div className="relative w-20 h-28">
+                            {[1, 2, 3, 4].map(i => (
+                                <div key={i} className="absolute inset-0 bg-red-900 rounded-xl border border-white/20 shadow-xl" style={{ transform: `translate(-${i * 1}px, -${i * 1}px)` }}></div>
+                            ))}
+                            <div className="absolute inset-0 bg-red-900 rounded-xl border-2 border-white/20 shadow-2xl flex items-center justify-center">
+                                <div className="w-16 h-24 border-2 border-white/10 border-dashed rounded-lg opacity-30 bg-red-950/20"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
+
 
             {/* Decorative Text */}
             <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center text-white/5 font-black text-8xl tracking-widest pointer-events-none select-none z-0">
@@ -167,7 +193,7 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
                         <button
                             onClick={() => {
                                 if (customBet > 0 && customBet <= me.balance) placeBet(customBet);
-                                else alert("Invalid bet amount");
+                                else showNotification("Invalid bet amount", "error");
                             }}
                             className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black text-lg py-3 rounded-xl shadow-lg shadow-yellow-500/20 transition-all hover:scale-105"
                         >
@@ -203,7 +229,6 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
                     </div>
                 )}
 
-
                 {/* Playing Controls */}
                 {isPlaying && isMyTurn && (
                     <div className="flex gap-4 items-end">
@@ -227,22 +252,58 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
                 )}
 
                 {/* Round Result Overlay */}
-                {isFinished && (
-                    <div className="bg-black/90 backdrop-blur-xl text-white px-10 py-8 rounded-3xl shadow-2xl border border-white/10 flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300">
-                        <h2 className="text-4xl font-black italic bg-gradient-to-br from-emerald-400 to-cyan-400 bg-clip-text text-transparent drop-shadow-2xl">ROUND OVER</h2>
-                        <div className="flex flex-col items-center gap-2 bg-white/5 p-4 rounded-2xl w-full border border-white/5">
-                            <span className="text-gray-400 text-xs font-bold uppercase tracking-[0.2em]">Dealer Total</span>
-                            <span className="text-4xl font-mono font-bold text-white">{dealer.score}</span>
-                            <span className="text-red-400 text-sm font-bold uppercase">{dealer.score > 21 ? 'BUSTED' : ''}</span>
+                {isFinished && (() => {
+                    // Personal Result Logic
+                    const myHands = me?.hands || [];
+                    const dealerScore = dealer.score;
+                    let resultText = "ROUND OVER";
+                    let resultColor = "text-gray-400";
+
+                    let hasWin = false;
+                    let hasPush = false;
+                    let allLost = true;
+
+                    myHands.forEach(h => {
+                        if (h.status === 'blackjack') {
+                            if (dealerScore !== 21) { hasWin = true; allLost = false; }
+                            else { hasPush = true; allLost = false; }
+                        } else if (h.status === 'busted') {
+                            // Lost
+                        } else {
+                            if (dealerScore > 21) { hasWin = true; allLost = false; }
+                            else if (h.score > dealerScore) { hasWin = true; allLost = false; }
+                            else if (h.score === dealerScore) { hasPush = true; allLost = false; }
+                        }
+                    });
+
+                    if (hasWin) {
+                        resultText = "YOU WON!";
+                        resultColor = "from-emerald-400 to-green-500";
+                    } else if (hasPush && !hasWin) {
+                        resultText = "PUSH";
+                        resultColor = "from-yellow-400 to-orange-500";
+                    } else if (allLost) {
+                        resultText = "YOU LOST";
+                        resultColor = "from-red-500 to-pink-600";
+                    }
+
+                    return (
+                        <div className="bg-black/90 backdrop-blur-xl text-white px-10 py-8 rounded-3xl shadow-2xl border border-white/10 flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300 z-50">
+                            <h2 className={`text-5xl font-black italic bg-gradient-to-br ${resultColor} bg-clip-text text-transparent drop-shadow-2xl`}>{resultText}</h2>
+                            <div className="flex flex-col items-center gap-2 bg-white/5 p-4 rounded-2xl w-full border border-white/5">
+                                <span className="text-gray-400 text-xs font-bold uppercase tracking-[0.2em]">Dealer Total</span>
+                                <span className="text-4xl font-mono font-bold text-white">{dealer.score}</span>
+                                <span className="text-red-400 text-sm font-bold uppercase">{dealer.score > 21 ? 'BUSTED' : ''}</span>
+                            </div>
+                            {isHost && (
+                                <button onClick={startNextRound} className="bg-white hover:bg-gray-100 text-black px-8 py-3 rounded-full font-black text-lg shadow-xl hover:scale-105 transition-all">
+                                    START NEXT ROUND
+                                </button>
+                            )}
+                            {!isHost && <div className="text-sm text-gray-500 animate-pulse font-mono">Waiting for host...</div>}
                         </div>
-                        {isHost && (
-                            <button onClick={startNextRound} className="bg-white hover:bg-gray-100 text-black px-8 py-3 rounded-full font-black text-lg shadow-xl hover:scale-105 transition-all">
-                                START NEXT ROUND
-                            </button>
-                        )}
-                        {!isHost && <div className="text-sm text-gray-500 animate-pulse font-mono">Waiting for host...</div>}
-                    </div>
-                )}
+                    );
+                })()}
             </div>
 
             {/* 3. Players Row (Bottom) */}
@@ -263,7 +324,7 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
                 <div className="bg-black/20 backdrop-blur-md border border-white/5 rounded-xl p-2 flex items-center gap-2 hover:bg-black/40 transition-colors cursor-pointer group"
                     onClick={() => {
                         navigator.clipboard.writeText(roomId);
-                        alert("Copied!");
+                        showNotification("Room ID copied!");
                     }}>
                     <div className="bg-emerald-500/10 p-1.5 rounded-lg group-hover:bg-emerald-500/20 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
