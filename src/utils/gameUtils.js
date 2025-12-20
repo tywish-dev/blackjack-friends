@@ -1,14 +1,16 @@
 export const SUITS = ['♠', '♥', '♣', '♦'];
 export const VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
-export const createDeck = () => {
+export const createDeck = (numDecks = 6) => {
     const deck = [];
-    for (let suit of SUITS) {
-        for (let value of VALUES) {
-            let weight = parseInt(value);
-            if (value === 'A') weight = 11;
-            if (['J', 'Q', 'K'].includes(value)) weight = 10;
-            deck.push({ suit, value, weight });
+    for (let i = 0; i < numDecks; i++) {
+        for (let suit of SUITS) {
+            for (let value of VALUES) {
+                let weight = parseInt(value);
+                if (value === 'A') weight = 11;
+                if (['J', 'Q', 'K'].includes(value)) weight = 10;
+                deck.push({ suit, value, weight });
+            }
         }
     }
     return deck;

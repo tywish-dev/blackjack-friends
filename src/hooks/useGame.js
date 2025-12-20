@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ref, onValue, set, update, push, child, get } from 'firebase/database';
+import { ref, onValue, set, update, push, child, get, onDisconnect, remove } from 'firebase/database';
 import { db } from '../firebase';
 import { createDeck, shuffleDeck, calculateScore } from '../utils/gameUtils';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,17 +20,41 @@ export const useGame = () => {
         if (playerName) localStorage.setItem('bj_playerName', playerName);
     }, [playerName]);
 
-    // Fetch Public Rooms
+    // Auto-clear error
+    useEffect(() => {
+        if (error) {
+            const timer = setTimeout(() => setError(null), 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [error]);
+
+    // Fetch Public Rooms and Cleanup Empty Rooms
     useEffect(() => {
         const roomsRef = ref(db, 'rooms');
         const unsubscribe = onValue(roomsRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
-                const roomList = Object.keys(data).map(key => ({
-                    id: key,
-                    ...data[key],
-                    playerCount: data[key].players ? Object.keys(data[key].players).length : 0
-                })).filter(room => room.status === 'waiting' || room.status === 'betting');
+                const roomList = [];
+                Object.keys(data).forEach(key => {
+                    const roomData = data[key];
+                    const players = roomData.players || {};
+                    const playerCount = Object.keys(players).length;
+
+                    // Cleanup: Delete room if empty
+                    if (playerCount === 0) {
+                        // Use a timeout or verify strictly to avoid deleting a just-created room
+                        // But for now, if it's empty in the DB, we remove it.
+                        // Ideally, we might want to check if it's been empty for X time, but simple removal is usually fine for these toy apps if creation adds a player immediately.
+                        // Note: creation adds player immediately.
+                        remove(ref(db, `rooms/${key}`));
+                    } else if (roomData.status === 'waiting' || roomData.status === 'betting') {
+                        roomList.push({
+                            id: key,
+                            ...roomData,
+                            playerCount
+                        });
+                    }
+                });
                 setActiveRooms(roomList);
             } else {
                 setActiveRooms([]);
@@ -40,31 +64,57 @@ export const useGame = () => {
     }, []);
 
     // Sync game state
+    // Sync game state & Host Migration
     useEffect(() => {
         if (!roomId) return;
         const gameRef = ref(db, `rooms/${roomId}`);
         const unsubscribe = onValue(gameRef, (snapshot) => {
             const data = snapshot.val();
-            if (data) setGameState(data);
+            if (data) {
+                setGameState(data);
+
+                // Host Migration: If no host, promote oldest player
+                if (data.players) {
+                    const playerIds = Object.keys(data.players);
+                    const hasHost = playerIds.some(id => data.players[id].isHost);
+
+                    if (!hasHost && playerIds.length > 0) {
+                        // Sort by joinedAt to find oldest
+                        const sortedIds = playerIds.sort((a, b) => {
+                            return (data.players[a].joinedAt || 0) - (data.players[b].joinedAt || 0);
+                        });
+
+                        const newHostId = sortedIds[0];
+
+                        // If I am the new host candidate, claim it
+                        if (newHostId === playerId) {
+                            update(ref(db, `rooms/${roomId}/players/${playerId}`), { isHost: true })
+                                .catch(console.error);
+                        }
+                    }
+                }
+            }
             else setError('Room not found');
         });
         return () => unsubscribe();
-    }, [roomId]);
+    }, [roomId, playerId]);
 
     const createRoom = async (name) => {
         const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
         const initialGameState = {
-            status: 'betting', // Start in betting phase
+            status: 'betting',
             deck: shuffleDeck(createDeck()),
             players: {
                 [playerId]: {
                     name: name,
-                    hand: [],
-                    score: 0,
-                    status: 'betting', // Status reflects phase
+                    hands: [],
+                    score: 0, // Total score logic might need adjustment, or just display from hands
+                    status: 'betting', // Player status (betting, playing, finished)
                     isHost: true,
                     balance: 1000,
-                    bet: 0
+                    insuranceBet: 0,
+                    bet: 0,
+                    joinedAt: Date.now()
                 }
             },
             dealer: { hand: [], score: 0, status: 'waiting' },
@@ -75,6 +125,11 @@ export const useGame = () => {
             await set(ref(db, `rooms/${newRoomId}`), initialGameState);
             setPlayerName(name);
             setRoomId(newRoomId);
+
+            // Set disconnect handler for the creator
+            const playerRef = ref(db, `rooms/${newRoomId}/players/${playerId}`);
+            onDisconnect(playerRef).remove();
+
             return newRoomId;
         } catch (err) {
             console.error(err);
@@ -89,13 +144,20 @@ export const useGame = () => {
             if (snapshot.exists()) {
                 await update(ref(db, `rooms/${code}/players/${playerId}`), {
                     name: name,
-                    hand: [],
+                    hands: [],
                     score: 0,
                     status: 'betting',
                     isHost: false,
                     balance: 1000,
-                    bet: 0
+                    insuranceBet: 0,
+                    bet: 0,
+                    joinedAt: Date.now()
                 });
+
+                // Set disconnect handler
+                const playerRef = ref(db, `rooms/${code}/players/${playerId}`);
+                onDisconnect(playerRef).remove();
+
                 setPlayerName(name);
                 setRoomId(code);
             } else {
@@ -118,181 +180,364 @@ export const useGame = () => {
         });
     };
 
+    // Helper to get sorted players
+    const getSortedPlayerIds = (players) => {
+        return Object.keys(players).sort((a, b) => {
+            const timeA = players[a].joinedAt || 0;
+            const timeB = players[b].joinedAt || 0;
+            // Stable sort using ID if times are equal
+            return timeA - timeB || a.localeCompare(b);
+        });
+    };
+
     const dealCards = async () => {
         if (!roomId || !gameState) return;
 
-        // Ensure all players are ready/have bets? (Optional strictness)
-        // For now Host forces start.
-
-        let currentDeck = shuffleDeck(createDeck()); // Fresh deck every round
+        let currentDeck = shuffleDeck(createDeck());
         const updates = {};
-        const playerIds = Object.keys(gameState.players);
 
-        // Reset hands but keep bets
-        playerIds.forEach(pid => {
-            updates[`rooms/${roomId}/players/${pid}/hand`] = [];
-            updates[`rooms/${roomId}/players/${pid}/score`] = 0;
-            updates[`rooms/${roomId}/players/${pid}/status`] = 'playing';
+        const sortedPlayerIds = getSortedPlayerIds(gameState.players);
 
-            // Initial Deal
-            const hand = [currentDeck.pop(), currentDeck.pop()];
-            updates[`rooms/${roomId}/players/${pid}/hand`] = hand;
-            updates[`rooms/${roomId}/players/${pid}/score`] = calculateScore(hand);
+        // Reset hands, keep bets
+        sortedPlayerIds.forEach(pid => {
+            const playerBet = gameState.players[pid].bet || 0;
 
-            // Check Instant Blackjack
-            if (calculateScore(hand) === 21) {
-                updates[`rooms/${roomId}/players/${pid}/status`] = 'blackjack';
-                // Instant Payout logic could happen here or at end. 
-                // To keep turn logic simple, let's mark them as 'standing' effectively but status='blackjack'
-                // effectively skipping their turn.
-            }
+            // Initialize first hand
+            const handCards = [currentDeck.pop(), currentDeck.pop()];
+            const handScore = calculateScore(handCards);
+            const handStatus = (handScore === 21) ? 'blackjack' : 'playing';
+
+            const handObj = {
+                cards: handCards,
+                score: handScore,
+                bet: playerBet,
+                status: handStatus,
+                isDoubled: false
+            };
+
+            updates[`rooms/${roomId}/players/${pid}/hands`] = [handObj];
+            updates[`rooms/${roomId}/players/${pid}/score`] = handScore; // Legacy/Display support
+            updates[`rooms/${roomId}/players/${pid}/status`] = (handStatus === 'blackjack') ? 'blackjack' : 'playing';
+            updates[`rooms/${roomId}/players/${pid}/insuranceBet`] = 0;
         });
 
-        // Dealer Deal
         const dealerHand = [currentDeck.pop(), currentDeck.pop()];
+        const dealerScore = calculateScore(dealerHand);
         updates[`rooms/${roomId}/dealer/hand`] = dealerHand;
-        updates[`rooms/${roomId}/dealer/score`] = calculateScore(dealerHand);
+        updates[`rooms/${roomId}/dealer/score`] = dealerScore;
         updates[`rooms/${roomId}/dealer/status`] = 'playing';
 
         updates[`rooms/${roomId}/deck`] = currentDeck;
         updates[`rooms/${roomId}/status`] = 'playing';
 
-        // Find first player who isn't blackjack
-        const firstPlayer = playerIds.find(pid => {
-            // Need to calculate score here again or trust the update map order?
-            // Actually updates map isn't applied yet.
-            // Simplified: Set turn to first player. If they have blackjack, they will auto-stand/skip in UI or useEffect.
-            return true;
-        });
-        updates[`rooms/${roomId}/turn`] = firstPlayer || 'dealer';
+        // Check for Dealer Blackjack (Peek)
+        // If dealer upcard is 10 or Ace
+        const dealerUpCard = dealerHand[0];
+        const dealerUpVal = dealerUpCard.weight; // Using weight from gameUtils (10 for Face, 11 for Ace)
+
+        // Simple Instant Resolution if Dealer has BJ
+        if (dealerScore === 21) {
+            // If Dealer has BJ, round ends immediately (mostly).
+            // We should offer insurance if Ace, but for "Pure" flow let's just resolve relative to player BJs.
+            // If we want to offer insurance, we pause state.
+            // For this step, simply checking if dealer has 21.
+            // If Dealer has 21, players with 21 Push, others Lose.
+            // We'll effectively skip turns.
+            updates[`rooms/${roomId}/status`] = 'finished';
+            updates[`rooms/${roomId}/turn`] = 'finished';
+            // We need to trigger resolution, but resolution function needs state...
+            // Let's just set the turn to 'dealer_reveal' or similar? 
+            // Or better, handle it inside the 'turn' logic.
+            // For now, let's keep standard flow, but if Dealer has BJ, we might auto-resolve.
+            // Actually, if Dealer has BJ, players don't get to hit.
+        } else {
+            updates[`rooms/${roomId}/turn`] = sortedPlayerIds[0];
+        }
+
+        // Turn goes to first player always (Standard Blackjack)
+        // Even if they have Blackjack, we usually let them "reveal" it or auto-stand in UI.
+        // For simplicity here, just give them turn.
+        updates[`rooms/${roomId}/turn`] = sortedPlayerIds[0];
 
         await update(ref(db), updates);
+    };
+
+    // Helper to get active hand index (first playing hand)
+    const getActiveHandIndex = (player) => {
+        if (!player || !player.hands) return -1;
+        return player.hands.findIndex(h => h.status === 'playing');
+    };
+
+    // Calculate Resolution (Dealer Play & Payouts)
+    const calculateResolution = (deck, playersData, dealerHandIn) => {
+        let currentDeck = [...deck];
+        let dealerHand = [...dealerHandIn];
+        let dealerScore = calculateScore(dealerHand);
+
+        // Dealer hits soft 17 (Convention: Stand on Soft 17 usually, but requested "Real Rules" often imply Stand on Soft 17)
+        while (dealerScore < 17) {
+            dealerHand.push(currentDeck.pop());
+            dealerScore = calculateScore(dealerHand);
+        }
+
+        const resolutionUpdates = {};
+        resolutionUpdates[`rooms/${roomId}/dealer/hand`] = dealerHand;
+        resolutionUpdates[`rooms/${roomId}/dealer/score`] = dealerScore;
+        resolutionUpdates[`rooms/${roomId}/status`] = 'finished';
+        resolutionUpdates[`rooms/${roomId}/turn`] = 'finished';
+        resolutionUpdates[`rooms/${roomId}/deck`] = currentDeck;
+
+        Object.keys(playersData).forEach(pid => {
+            const p = playersData[pid];
+            const hands = p.hands || [];
+
+            // Calculate total balance update
+            let totalWin = 0;
+
+            hands.forEach((hand) => {
+                let winAmount = 0;
+                const pScore = hand.score;
+                const pStatus = hand.status;
+                const pBet = hand.bet;
+
+                if (pStatus === 'blackjack') {
+                    if (dealerScore === 21 && dealerHand.length === 2 && calculateScore([dealerHand[0], dealerHand[1]]) === 21) { // Dealer BJ check
+                        winAmount = pBet; // Push
+                    } else {
+                        winAmount = pBet + (pBet * 1.5);
+                    }
+                } else if (pStatus === 'busted') {
+                    winAmount = 0;
+                } else {
+                    // Standing / Double
+                    if (dealerScore > 21) {
+                        winAmount = pBet * 2;
+                    } else if (pScore > dealerScore) {
+                        winAmount = pBet * 2;
+                    } else if (pScore === dealerScore) {
+                        winAmount = pBet; // Push
+                    } else {
+                        winAmount = 0;
+                    }
+                }
+                totalWin += winAmount;
+            });
+
+            resolutionUpdates[`rooms/${roomId}/players/${pid}/balance`] = p.balance + totalWin;
+        });
+
+        return resolutionUpdates;
+    };
+
+    const moveToNextStep = (currentDeck, currentPlayerId, currentPlayersState) => {
+        const sortedPlayerIds = getSortedPlayerIds(currentPlayersState);
+
+        // 1. Check if current player has more active hands
+        const currPlayer = currentPlayersState[currentPlayerId];
+        if (currPlayer && getActiveHandIndex(currPlayer) !== -1) {
+            // Still current player's turn (next hand)
+            return { [`rooms/${roomId}/turn`]: currentPlayerId };
+        }
+
+        // 2. Move to next player
+        const currentIndex = sortedPlayerIds.indexOf(currentPlayerId);
+        let nextIndex = currentIndex + 1;
+
+        if (nextIndex < sortedPlayerIds.length) {
+            return { [`rooms/${roomId}/turn`]: sortedPlayerIds[nextIndex] };
+        } else {
+            // 3. Dealer Turn
+            return calculateResolution(currentDeck, currentPlayersState, gameState.dealer.hand);
+        }
     };
 
     const hit = async () => {
         if (!roomId || !gameState) return;
         const currentDeck = [...gameState.deck];
         const card = currentDeck.pop();
-        const currentHand = gameState.players[playerId].hand || [];
-        const newHand = [...currentHand, card];
-        const newScore = calculateScore(newHand);
 
-        const updates = {};
+        const player = gameState.players[playerId];
+        const handIdx = getActiveHandIndex(player);
+        if (handIdx === -1) return;
+
+        const targetHand = player.hands[handIdx];
+        const newCards = [...targetHand.cards, card];
+        const newScore = calculateScore(newCards);
+
+        let newStatus = 'playing';
+        if (newScore > 21) newStatus = 'busted';
+        if (newScore === 21) newStatus = 'standing'; // Auto stand on 21
+
+        const updatedHand = { ...targetHand, cards: newCards, score: newScore, status: newStatus };
+        const updatedHands = [...player.hands];
+        updatedHands[handIdx] = updatedHand;
+
+        let updates = {};
         updates[`rooms/${roomId}/deck`] = currentDeck;
-        updates[`rooms/${roomId}/players/${playerId}/hand`] = newHand;
-        updates[`rooms/${roomId}/players/${playerId}/score`] = newScore;
+        updates[`rooms/${roomId}/players/${playerId}/hands`] = updatedHands;
+        updates[`rooms/${roomId}/players/${playerId}/score`] = newScore; // Legacy
 
-        if (newScore > 21) {
-            updates[`rooms/${roomId}/players/${playerId}/status`] = 'busted';
-        } else if (newScore === 21) {
-            // Auto-stand on 21
-            updates[`rooms/${roomId}/players/${playerId}/status`] = 'standing';
-            // We'd ideally trigger next turn here, but can let user wait or click stand?
-            // User requested "auto win on 21". If it's not blackjack (initial 2), it's just 21.
-            // Let's auto-stand them. Turn passing needs to be robust.
-            // For now, let's just update status. User can click Stand, or we can improve automation later.
+        const tempPlayers = {
+            ...gameState.players,
+            [playerId]: { ...player, hands: updatedHands }
+        };
+
+        if (newStatus !== 'playing') {
+            const nextUpdates = moveToNextStep(currentDeck, playerId, tempPlayers);
+            updates = { ...updates, ...nextUpdates };
         }
 
         await update(ref(db), updates);
     };
 
     const stand = async () => {
-        const playerIds = Object.keys(gameState.players);
-        const currentIndex = playerIds.indexOf(playerId);
+        if (!roomId || !gameState) return;
 
-        await update(ref(db, `rooms/${roomId}/players/${playerId}/status`), 'standing');
+        const player = gameState.players[playerId];
+        const handIdx = getActiveHandIndex(player);
+        if (handIdx === -1) return;
 
-        // Find next player
-        let nextIndex = currentIndex + 1;
-        if (nextIndex < playerIds.length) {
-            await update(ref(db, `rooms/${roomId}/turn`), playerIds[nextIndex]);
-        } else {
-            await resolveGame();
-        }
+        const updatedHands = [...player.hands];
+        updatedHands[handIdx] = { ...updatedHands[handIdx], status: 'standing' };
+
+        let updates = {};
+        updates[`rooms/${roomId}/players/${playerId}/hands`] = updatedHands;
+
+        const tempPlayers = {
+            ...gameState.players,
+            [playerId]: { ...player, hands: updatedHands }
+        };
+
+        const nextUpdates = moveToNextStep(gameState.deck, playerId, tempPlayers);
+        updates = { ...updates, ...nextUpdates };
+
+        await update(ref(db), updates);
     };
 
-    const resolveGame = async () => {
-        // Dealer Play
-        let currentDeck = [...gameState.deck];
-        let dealerHand = [...gameState.dealer.hand];
-        let dealerScore = calculateScore(dealerHand);
+    const doubleDown = async () => {
+        if (!roomId || !gameState) return;
+        const currentDeck = [...gameState.deck];
+        const player = gameState.players[playerId];
+        const handIdx = getActiveHandIndex(player);
+        if (handIdx === -1) return;
 
-        while (dealerScore < 17) {
-            dealerHand.push(currentDeck.pop());
-            dealerScore = calculateScore(dealerHand);
-        }
+        const targetHand = player.hands[handIdx];
 
-        // Calculate Payouts
-        const updates = {};
-        updates[`rooms/${roomId}/dealer/hand`] = dealerHand;
-        updates[`rooms/${roomId}/dealer/score`] = dealerScore;
-        updates[`rooms/${roomId}/status`] = 'finished';
-        updates[`rooms/${roomId}/turn`] = 'finished';
+        if (targetHand.cards.length !== 2) return;
+        if (player.balance < targetHand.bet) return setError("Insufficient funds to double");
 
-        Object.keys(gameState.players).forEach(pid => {
-            const p = gameState.players[pid];
-            let winAmount = 0;
-            const pScore = p.score || 0; // If busted, score might be > 21 but status is busted
+        // Double bet, Deal 1 card, Stand
+        const card = currentDeck.pop();
+        const newCards = [...targetHand.cards, card];
+        const newScore = calculateScore(newCards);
 
-            if (p.status === 'blackjack') {
-                // Blackjack Pays 3:2
-                if (dealerScore === 21 && dealerHand.length === 2) {
-                    // Push
-                    winAmount = p.bet;
-                } else {
-                    winAmount = p.bet + (p.bet * 1.5);
-                }
-            } else if (p.status === 'busted') {
-                winAmount = 0;
-            } else {
-                // Standing
-                if (dealerScore > 21) {
-                    winAmount = p.bet * 2;
-                } else if (pScore > dealerScore) {
-                    winAmount = p.bet * 2;
-                } else if (pScore === dealerScore) {
-                    winAmount = p.bet; // Push
-                } else {
-                    winAmount = 0;
-                }
-            }
+        let newStatus = 'standing';
+        if (newScore > 21) newStatus = 'busted';
 
-            updates[`rooms/${roomId}/players/${pid}/balance`] = p.balance + winAmount;
-            updates[`rooms/${roomId}/players/${pid}/bet`] = 0; // Reset bet for next round
-            updates[`rooms/${roomId}/players/${pid}/status`] = 'betting'; // Ready for next round
-        });
+        const updatedHand = {
+            ...targetHand,
+            cards: newCards,
+            score: newScore,
+            status: newStatus,
+            bet: targetHand.bet * 2,
+            isDoubled: true
+        };
+        const updatedHands = [...player.hands];
+        updatedHands[handIdx] = updatedHand;
 
-        updates[`rooms/${roomId}/status`] = 'finished'; // UI shows results, generic 'finished' state
-        // Actually, we should probably set status to 'finished' to show results overlay, 
-        // then Host clicks "New Round" to reset everyone to 'betting'.
-        // For now, let's keep payouts in DB but reset bets when Host starts new round?
-        // Let's DO NOT reset bets to 0 yet, so we can show "You won $X".
-        // Instead, we will clear bets in `startRound`.
+        let updates = {};
+        updates[`rooms/${roomId}/deck`] = currentDeck;
+        updates[`rooms/${roomId}/players/${playerId}/hands`] = updatedHands;
+        updates[`rooms/${roomId}/players/${playerId}/balance`] = player.balance - targetHand.bet;
 
-        // Correction: We apply balance updates NOW.
-        // But we keep `bet` field to display "Last Bet" or similar regarding outcome?
-        // Let's reset bet to 0 to be clean. UI can show "Balance increased".
+        const tempPlayers = {
+            ...gameState.players,
+            [playerId]: { ...player, hands: updatedHands, balance: player.balance - targetHand.bet }
+        };
+
+        const nextUpdates = moveToNextStep(currentDeck, playerId, tempPlayers);
+        updates = { ...updates, ...nextUpdates };
+
+        await update(ref(db), updates);
+    };
+
+    const splitPair = async () => {
+        if (!roomId || !gameState) return;
+        const currentDeck = [...gameState.deck];
+        const player = gameState.players[playerId];
+        const handIdx = getActiveHandIndex(player);
+        if (handIdx === -1) return;
+
+        const targetHand = player.hands[handIdx];
+        if (targetHand.cards.length !== 2) return;
+
+        // Check same Rank (Value)
+        if (targetHand.cards[0].value !== targetHand.cards[1].value) return setError("Must have same rank to split");
+
+        if (player.balance < targetHand.bet) return setError("Insufficient funds to split");
+
+        const card1 = targetHand.cards[0];
+        const card2 = targetHand.cards[1];
+
+        const newCard1 = currentDeck.pop();
+        const newCard2 = currentDeck.pop();
+
+        const isAces = card1.value === 'A';
+        const splitStatus = isAces ? 'standing' : 'playing';
+
+        const hand1 = {
+            cards: [card1, newCard1],
+            score: calculateScore([card1, newCard1]),
+            bet: targetHand.bet,
+            status: splitStatus,
+            isDoubled: false
+        };
+        const hand2 = {
+            cards: [card2, newCard2],
+            score: calculateScore([card2, newCard2]),
+            bet: targetHand.bet,
+            status: splitStatus,
+            isDoubled: false
+        };
+
+        const updatedHands = [...player.hands];
+        updatedHands.splice(handIdx, 1, hand1, hand2);
+
+        let updates = {};
+        updates[`rooms/${roomId}/deck`] = currentDeck;
+        updates[`rooms/${roomId}/players/${playerId}/hands`] = updatedHands;
+        updates[`rooms/${roomId}/players/${playerId}/balance`] = player.balance - targetHand.bet;
+
+        const tempPlayers = {
+            ...gameState.players,
+            [playerId]: { ...player, hands: updatedHands, balance: player.balance - targetHand.bet }
+        };
+
+        const nextUpdates = moveToNextStep(currentDeck, playerId, tempPlayers);
+        updates = { ...updates, ...nextUpdates };
 
         await update(ref(db), updates);
     };
 
     const startNextRound = async () => {
-        await update(ref(db, `rooms/${roomId}/status`), 'betting');
-        await update(ref(db, `rooms/${roomId}/dealer/hand`), []);
-        await update(ref(db, `rooms/${roomId}/dealer/score`), 0);
-        // Reset players
         const updates = {};
+        updates[`rooms/${roomId}/status`] = 'betting';
+        updates[`rooms/${roomId}/dealer/hand`] = [];
+        updates[`rooms/${roomId}/dealer/score`] = 0;
+        updates[`rooms/${roomId}/turn`] = null;
+
         Object.keys(gameState.players).forEach(pid => {
-            updates[`rooms/${roomId}/players/${pid}/hand`] = [];
+            updates[`rooms/${roomId}/players/${pid}/hands`] = [];
             updates[`rooms/${roomId}/players/${pid}/score`] = 0;
             updates[`rooms/${roomId}/players/${pid}/status`] = 'betting';
             updates[`rooms/${roomId}/players/${pid}/bet`] = 0;
+            updates[`rooms/${roomId}/players/${pid}/insuranceBet`] = 0;
         });
         await update(ref(db), updates);
     };
 
     return {
         roomId, playerId, playerName, gameState, activeRooms, error,
-        createRoom, joinRoom, placeBet, dealCards, hit, stand, startNextRound
+        createRoom, joinRoom, placeBet, dealCards, hit, stand, startNextRound, doubleDown, splitPair
     };
 };

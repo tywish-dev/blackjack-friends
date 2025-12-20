@@ -15,7 +15,9 @@ function App() {
     error,
     activeRooms, // Get activeRooms from hook
     placeBet,
-    startNextRound
+    startNextRound,
+    doubleDown,
+    splitPair
   } = useGame();
 
   return (
@@ -51,6 +53,8 @@ function App() {
             onReset={() => window.location.reload()} // Quick reset hack
             placeBet={placeBet}
             startNextRound={startNextRound}
+            onDouble={doubleDown}
+            onSplit={splitPair}
           />
         </div>
       )}

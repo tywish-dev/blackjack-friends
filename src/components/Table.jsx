@@ -3,74 +3,84 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
 
 const PlayerArea = ({ player, isCurrentTurn, isMe }) => {
+    // Robust fallback for hands
+    const hands = player.hands || (player.hand ? [{ cards: player.hand, score: player.score, status: player.status, bet: player.bet }] : []);
+
     return (
         <div className={`
-      flex flex-col items-center gap-4 p-4 rounded-xl transition-all duration-300 relative
-      ${isCurrentTurn ? 'bg-yellow-500/10 ring-2 ring-yellow-500/50 shadow-[0_0_30px_rgba(234,179,8,0.2)]' : ''}
-      ${isMe ? 'mb-4' : 'opacity-80 scale-90'}
+      flex gap-2 p-3 rounded-xl transition-all duration-300 relative
+      ${isMe ? 'bg-white/5 border border-white/10' : ''}
     `}>
             {/* Balance Badge */}
-            <div className="absolute -top-4 bg-gray-900 border border-emerald-500/50 text-emerald-400 px-3 py-1 rounded-full text-sm font-mono font-bold shadow-lg flex items-center gap-1">
+            <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-gray-900 border border-emerald-500/50 text-emerald-400 px-3 py-1 rounded-full text-sm font-mono font-bold shadow-lg flex items-center gap-1 z-30">
                 <span>$</span>
                 <span>{player.balance}</span>
             </div>
 
-            {/* Current Bet */}
-            {player.bet > 0 && (
-                <div className="absolute -right-4 top-10 bg-black/80 border border-yellow-500/50 text-yellow-400 px-2 py-1 rounded-lg text-xs font-mono font-bold shadow-lg rotate-12">
-                    Bet: ${player.bet}
-                </div>
-            )}
-
-            <div className="relative mt-2">
-                {/* Overlapping Cards */}
-                <div className="flex -space-x-12 min-h-[144px]">
-                    <AnimatePresence>
-                        {player.hand && player.hand.map((card, idx) => (
-                            <Card key={`${card.suit}-${card.value}-${idx}`} {...card} index={idx} />
-                        ))}
-                    </AnimatePresence>
-                    {(!player.hand || player.hand.length === 0) && (
-                        <div className="w-24 h-36 border-2 border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/10 text-xs">
-                            {player.status === 'betting' ? 'Betting...' : 'Empty'}
+            {hands.map((hand, idx) => {
+                const isHandActive = isCurrentTurn && hand.status === 'playing';
+                return (
+                    <div key={idx} className={`relative flex flex-col items-center rounded-xl p-2 transition-all min-w-[120px]
+                         ${isHandActive ? 'bg-yellow-500/10 ring-2 ring-yellow-500/50 shadow-[0_0_20px_rgba(234,179,8,0.2)]' : ''}
+                    `}>
+                        {/* Hand Bet */}
+                        <div className="absolute -top-3 right-0 bg-black/90 border border-yellow-500/50 text-yellow-400 px-1.5 py-0.5 rounded-lg text-xs font-mono font-bold shadow-sm z-40 transform rotate-6">
+                            ${hand.bet}
                         </div>
-                    )}
-                </div>
 
-                {player.status === 'busted' && (
-                    <div className="absolute inset-0 flex items-center justify-center z-10">
-                        <div className="bg-red-600/90 text-white font-bold py-1 px-3 rounded-full shadow-lg transform rotate-12 border-2 border-white animate-bounce-in">
-                            BUSTED
+                        <div className="relative mt-4">
+                            <div className="flex -space-x-8 min-h-[120px] justify-center pt-2">
+                                <AnimatePresence>
+                                    {hand.cards && hand.cards.map((card, cIdx) => (
+                                        <div key={`${card.suit}-${card.value}-${cIdx}`} className="transform scale-90 origin-top hover:-translate-y-4 transition-transform duration-300">
+                                            <Card {...card} index={cIdx} />
+                                        </div>
+                                    ))}
+                                </AnimatePresence>
+                            </div>
+
+                            {/* Overlay Status */}
+                            {hand.status === 'busted' && (
+                                <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+                                    <div className="bg-red-600/90 text-white font-bold py-1 px-3 rounded-full shadow-lg transform rotate-12 border-2 border-white animate-bounce-in text-xs">BUST</div>
+                                </div>
+                            )}
+                            {hand.status === 'blackjack' && (
+                                <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+                                    <div className="bg-yellow-500/90 text-black font-black py-1 px-3 rounded-full shadow-lg transform -rotate-12 border-2 border-white animate-pulse text-xs">BJ</div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="text-emerald-400 font-mono text-lg font-bold mt-1">
+                            {hand.status !== 'betting' ? hand.score : '--'}
                         </div>
                     </div>
-                )}
-                {player.status === 'blackjack' && (
-                    <div className="absolute inset-0 flex items-center justify-center z-10">
-                        <div className="bg-yellow-500/90 text-black font-black py-1 px-3 rounded-full shadow-lg transform -rotate-12 border-2 border-white animate-pulse">
-                            BLACKJACK
-                        </div>
-                    </div>
-                )}
-            </div>
+                );
+            })}
 
-            <div className="text-center">
-                <div className="font-bold text-white text-lg flex items-center gap-2 justify-center">
-                    {player.name} {isMe && '(You)'}
-                    {isCurrentTurn && <span className="w-3 h-3 bg-yellow-400 rounded-full animate-pulse shadow-glow"></span>}
-                </div>
-                <div className="text-emerald-400 font-mono text-xl">
-                    {player.status !== 'betting' && `Score: ${player.score}`}
+            <div className="absolute bottom-[-1.5rem] w-full text-center left-0">
+                <div className="font-bold text-white text-sm flex items-center gap-2 justify-center truncate w-full">
+                    {isMe ? <span className="text-emerald-400 font-extrabold tracking-wider">YOU</span> : player.name}
+                    {isCurrentTurn && <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse shadow-glow"></span>}
                 </div>
             </div>
         </div>
     );
 };
 
-const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, placeBet, startNextRound }) => {
+const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, placeBet, startNextRound, onDouble, onSplit }) => {
     const players = gameState.players || {};
-    const playerIds = Object.keys(players);
+    // Consistent Sorting
+    const sortedPlayers = Object.keys(players)
+        .sort((a, b) => {
+            const timeA = players[a].joinedAt || 0;
+            const timeB = players[b].joinedAt || 0;
+            return timeA - timeB || a.localeCompare(b);
+        })
+        .map(key => ({ id: key, ...players[key] }));
+
     const me = players[playerId];
-    const others = playerIds.filter(id => id !== playerId).map(id => players[id]);
     const dealer = gameState.dealer || { hand: [], score: 0 };
 
     const isMyTurn = gameState.turn === playerId;
@@ -79,154 +89,191 @@ const Table = ({ roomId, gameState, playerId, onHit, onStand, onDeal, onReset, p
     const isFinished = gameState.status === 'finished';
     const isBetting = gameState.status === 'betting';
 
-    return (
-        <div className="relative w-full h-full flex flex-col justify-between items-center py-8">
+    // Local state for custom bet input
+    const [customBet, setCustomBet] = useState(10);
 
-            {/* Dealer Area */}
-            <div className="absolute top-16 left-1/2 transform -translate-x-1/2 flex flex-col items-center">
-                <div className="text-white/50 text-sm font-bold tracking-widest mb-2">DEALER</div>
-                <div className="flex -space-x-12">
-                    <AnimatePresence>
-                        {dealer.hand && dealer.hand.map((card, idx) => (
-                            <div key={`dealer-${idx}`} className="relative">
-                                {/* Hide second card if game is playing */}
-                                {idx === 1 && !isFinished ? (
-                                    <div className="w-24 h-36 bg-red-800 rounded-xl shadow-xl border border-gray-200 
-                                            flex items-center justify-center relative shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                                        <div className="w-20 h-32 border-2 border-red-900 border-dashed rounded-lg opacity-50"></div>
-                                        <div className="absolute inset-0 flex items-center justify-center">
-                                            <span className="text-4xl text-red-950">♦</span>
+    return (
+        // Replaced fixed height absolute centering with flexible column layout
+        <div className="w-full h-screen flex flex-col justify-between items-center py-4 bg-green-900/0 overflow-hidden relative">
+
+            {/* 1. Dealer Area (Top) */}
+            <div className="flex-none pt-4 pb-2 z-10 w-full flex justify-center">
+                <div className="bg-black/30 px-6 py-4 rounded-3xl border border-white/5 backdrop-blur-sm flex flex-col items-center gap-2 shadow-2xl transition-all hover:bg-black/40">
+                    <div className="text-white/30 text-[10px] font-bold tracking-[0.3em] uppercase">Computer Dealer</div>
+                    <div className="flex -space-x-12 min-h-[120px]">
+                        <AnimatePresence>
+                            {dealer.hand && dealer.hand.map((card, idx) => (
+                                <div key={`dealer-${idx}`} className="relative transform hover:-translate-y-2 transition-transform">
+                                    {idx === 1 && !isFinished ? (
+                                        <div className="w-20 h-28 bg-red-900 rounded-xl shadow-xl border border-red-800/50 
+                                                flex items-center justify-center relative">
+                                            <div className="w-16 h-24 border-2 border-red-950 border-dashed rounded-lg opacity-30"></div>
+                                            <span className="absolute text-4xl text-red-950 opacity-50">♦</span>
                                         </div>
-                                    </div>
-                                ) : (
-                                    <Card {...card} index={idx} />
-                                )}
+                                    ) : (
+                                        <div className="transform scale-90 origin-top">
+                                            <Card {...card} index={idx} textClass="text-sm" />
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </AnimatePresence>
+                        {(!dealer.hand || dealer.hand.length === 0) && (
+                            <div className="w-20 h-28 border-2 border-dashed border-white/10 rounded-xl flex items-center justify-center text-white/10 font-mono text-sm">
+                                Waiting
                             </div>
-                        ))}
-                    </AnimatePresence>
-                    {(!dealer.hand || dealer.hand.length === 0) && (
-                        <div className="w-24 h-36 border-2 border-dashed border-white/10 rounded-xl"></div>
+                        )}
+                    </div>
+                    {isFinished && (
+                        <div className="text-white font-mono text-xl font-black bg-black/50 px-4 py-0.5 rounded-full border border-white/10 shadow-lg">{dealer.score}</div>
                     )}
                 </div>
+            </div>
+
+            {/* Decorative Text */}
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center text-white/5 font-black text-8xl tracking-widest pointer-events-none select-none z-0">
+                21
+            </div>
+
+            {/* 2. Middle Area (Controls & Overlays) */}
+            <div className="flex-grow flex items-center justify-center w-full relative z-40">
+                {/* Betting Overlay */}
+                {isBetting && !me?.bet && (
+                    <div className="bg-black/90 backdrop-blur p-6 rounded-2xl border border-yellow-500/30 flex flex-col items-center gap-4 shadow-2xl animate-in fade-in zoom-in w-full max-w-sm">
+                        <h2 className="text-xl font-bold text-yellow-400 font-mono">PLACE BET</h2>
+                        <div className="w-full">
+                            <div className="flex justify-between text-gray-400 text-xs mb-1 uppercase font-bold tracking-wider">
+                                <span>Balance</span>
+                                <span className="text-white">${me.balance}</span>
+                            </div>
+                            <input
+                                type="number"
+                                min="1"
+                                max={me.balance}
+                                value={customBet}
+                                onChange={(e) => setCustomBet(Number(e.target.value))}
+                                className="w-full bg-gray-800 border-2 border-gray-700 rounded-xl py-3 px-4 text-2xl font-mono text-white text-center focus:border-yellow-500 focus:outline-none transition-colors"
+                            />
+                        </div>
+                        <div className="flex gap-2 justify-center w-full">
+                            {[10, 50, 100].map(amt => (
+                                <button key={amt} onClick={() => setCustomBet(prev => Math.min(prev + amt, me.balance))}
+                                    className="bg-gray-800 hover:bg-gray-700 text-white rounded-lg px-3 py-2 text-xs font-bold transition-colors flex-1 border border-white/5">
+                                    +{amt}
+                                </button>
+                            ))}
+                            <button onClick={() => setCustomBet(0)} className="bg-red-900/50 hover:bg-red-900 text-white rounded-lg px-3 py-2 text-xs font-bold transition-colors border border-red-500/30">Clear</button>
+                        </div>
+                        <button
+                            onClick={() => {
+                                if (customBet > 0 && customBet <= me.balance) placeBet(customBet);
+                                else alert("Invalid bet amount");
+                            }}
+                            className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black text-lg py-3 rounded-xl shadow-lg shadow-yellow-500/20 transition-all hover:scale-105"
+                        >
+                            CONFIRM
+                        </button>
+                    </div>
+                )}
+
+                {/* Waiting for bets / Host Deal */}
+                {isHost && isBetting && me?.bet > 0 && (
+                    <button
+                        onClick={onDeal}
+                        disabled={Object.values(players).some(p => p.bet === 0)}
+                        className="bg-emerald-500 disabled:bg-gray-800/80 disabled:opacity-80 disabled:cursor-not-allowed text-white font-bold text-lg py-3 px-8 rounded-full shadow-lg transition-all flex items-center gap-3 backdrop-blur-sm border border-white/10"
+                    >
+                        {Object.values(players).some(p => p.bet === 0) ? (
+                            <>
+                                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                                <span className="text-white/50">Waiting for bets...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>DEAL CARDS</span>
+                                <span className="bg-white/20 px-2 rounded text-sm">Space</span>
+                            </>
+                        )}
+                    </button>
+                )}
+                {/* Non-host waiting message */}
+                {!isHost && isBetting && me?.bet > 0 && (
+                    <div className="bg-black/50 backdrop-blur px-6 py-3 rounded-full border border-white/10 text-white animate-pulse">
+                        Waiting for start...
+                    </div>
+                )}
+
+
+                {/* Playing Controls */}
+                {isPlaying && isMyTurn && (
+                    <div className="flex gap-4 items-end">
+                        <div className="flex flex-col gap-2">
+                            <button onClick={onSplit} className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 px-6 rounded-xl shadow-lg text-xs font-mono border-b-4 border-purple-800 active:border-b-0 active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed">SPLIT</button>
+                            <button onClick={onDouble} className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded-xl shadow-lg text-xs font-mono border-b-4 border-blue-800 active:border-b-0 active:translate-y-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed">DOUBLE</button>
+                        </div>
+                        <button
+                            onClick={onHit}
+                            className="bg-emerald-500 hover:bg-emerald-400 text-white font-black text-2xl py-4 px-10 rounded-2xl shadow-[0_6px_0_rgb(6,95,70)] hover:shadow-[0_3px_0_rgb(6,95,70)] hover:translate-y-[3px] active:translate-y-[6px] active:shadow-none transition-all border-b-4 border-emerald-700"
+                        >
+                            HIT
+                        </button>
+                        <button
+                            onClick={onStand}
+                            className="bg-red-500 hover:bg-red-400 text-white font-black text-2xl py-4 px-10 rounded-2xl shadow-[0_6px_0_rgb(153,27,27)] hover:shadow-[0_3px_0_rgb(153,27,27)] hover:translate-y-[3px] active:translate-y-[6px] active:shadow-none transition-all border-b-4 border-red-700"
+                        >
+                            STAND
+                        </button>
+                    </div>
+                )}
+
+                {/* Round Result Overlay */}
                 {isFinished && (
-                    <div className="mt-2 text-white font-mono text-xl">{dealer.score}</div>
+                    <div className="bg-black/90 backdrop-blur-xl text-white px-10 py-8 rounded-3xl shadow-2xl border border-white/10 flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300">
+                        <h2 className="text-4xl font-black italic bg-gradient-to-br from-emerald-400 to-cyan-400 bg-clip-text text-transparent drop-shadow-2xl">ROUND OVER</h2>
+                        <div className="flex flex-col items-center gap-2 bg-white/5 p-4 rounded-2xl w-full border border-white/5">
+                            <span className="text-gray-400 text-xs font-bold uppercase tracking-[0.2em]">Dealer Total</span>
+                            <span className="text-4xl font-mono font-bold text-white">{dealer.score}</span>
+                            <span className="text-red-400 text-sm font-bold uppercase">{dealer.score > 21 ? 'BUSTED' : ''}</span>
+                        </div>
+                        {isHost && (
+                            <button onClick={startNextRound} className="bg-white hover:bg-gray-100 text-black px-8 py-3 rounded-full font-black text-lg shadow-xl hover:scale-105 transition-all">
+                                START NEXT ROUND
+                            </button>
+                        )}
+                        {!isHost && <div className="text-sm text-gray-500 animate-pulse font-mono">Waiting for host...</div>}
+                    </div>
                 )}
             </div>
 
-            {/* Decorative Center Text */}
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center text-white/5 font-black text-6xl tracking-widest pointer-events-none select-none z-0">
-                BLACKJACK
-            </div>
-
-            {/* Other Players */}
-            <div className="flex flex-wrap justify-center gap-12 z-10 w-full px-8 mt-20">
-                {others.map((p, idx) => (
-                    <PlayerArea
-                        key={idx}
-                        player={p}
-                        isCurrentTurn={gameState.turn === Object.keys(players).find(key => players[key] === p)}
-                        isMe={false}
-                    />
+            {/* 3. Players Row (Bottom) */}
+            <div className="flex-none flex items-end justify-center gap-4 px-4 pb-8 pt-16 w-full overflow-x-auto z-10 no-scrollbar min-h-[260px]">
+                {sortedPlayers.map((p) => (
+                    <div key={p.id} className="transform scale-90 sm:scale-100 transition-transform">
+                        <PlayerArea
+                            player={p}
+                            isCurrentTurn={gameState.turn === p.id}
+                            isMe={p.id === playerId}
+                        />
+                    </div>
                 ))}
             </div>
 
-            {/* Betting Controls */}
-            {isBetting && !me?.bet && (
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 bg-black/90 backdrop-blur p-8 rounded-2xl border border-yellow-500/30 flex flex-col items-center gap-6 shadow-2xl animate-in fade-in zoom-in">
-                    <h2 className="text-2xl font-bold text-yellow-400">Place Your Bet</h2>
-                    <div className="flex gap-4">
-                        {[10, 50, 100, 500].map(amount => (
-                            <button
-                                key={amount}
-                                onClick={() => placeBet(amount)}
-                                className="w-16 h-16 rounded-full border-4 border-dashed border-white/20 bg-gradient-to-br from-gray-800 to-black text-white font-bold hover:scale-110 hover:border-yellow-400 transition-all flex items-center justify-center shadow-lg"
-                            >
-                                ${amount}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* Waiting for others to bet */}
-            {isBetting && me?.bet > 0 && (
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-40 bg-black/50 backdrop-blur px-6 py-3 rounded-full border border-white/10 text-white animate-pulse">
-                    Waiting for other players...
-                </div>
-            )}
-
-            {/* Round Over */}
-            {isFinished && (
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 bg-black/80 backdrop-blur text-white px-8 py-6 rounded-2xl shadow-2xl border border-white/20 flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-300">
-                    <h2 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">Round Over</h2>
-                    {/* Dealer Result */}
-                    <div className="text-gray-400">
-                        Dealer: {dealer.score > 21 ? 'BUSTED' : dealer.score}
-                    </div>
-
-                    {isHost && (
-                        <button onClick={startNextRound} className="mt-2 bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-full font-bold shadow-lg shadow-emerald-500/20 transition-all hover:scale-105">
-                            Start Next Round
-                        </button>
-                    )}
-                    {!isHost && <div className="text-sm text-gray-500 animate-pulse">Waiting for host...</div>}
-                </div>
-            )}
-
-            {/* Controls */}
-            <div className="flex flex-col items-center gap-8 z-10 mb-8 w-full max-w-4xl">
-                {me && (
-                    <PlayerArea player={me} isCurrentTurn={isMyTurn} isMe={true} />
-                )}
-
-                <div className="flex gap-4 h-20 items-center">
-                    {/* Host Controls */}
-                    {isHost && isBetting && (
-                        /* Host can force deal if everyone has bet, or just wait. Logic simplified for now */
-                        <button
-                            onClick={onDeal}
-                            disabled={Object.values(players).some(p => p.bet === 0)}
-                            className="bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-yellow-400 text-black font-black text-xl py-4 px-12 rounded-full shadow-[0_4px_0_rgb(161,98,7)] hover:shadow-[0_2px_0_rgb(161,98,7)] hover:translate-y-[2px] active:translate-y-[4px] active:shadow-none transition-all"
-                        >
-                            DEAL
-                        </button>
-                    )}
-
-                    {/* Player Controls */}
-                    {isPlaying && isMyTurn && (
-                        <>
-                            <button
-                                onClick={onHit}
-                                className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold text-xl py-3 px-8 rounded-xl shadow-[0_4px_0_rgb(6,95,70)] hover:shadow-[0_2px_0_rgb(6,95,70)] hover:translate-y-[2px] active:translate-y-[4px] active:shadow-none transition-all"
-                            >
-                                HIT
-                            </button>
-                            <button
-                                onClick={onStand}
-                                className="bg-red-500 hover:bg-red-400 text-white font-bold text-xl py-3 px-8 rounded-xl shadow-[0_4px_0_rgb(153,27,27)] hover:shadow-[0_2px_0_rgb(153,27,27)] hover:translate-y-[2px] active:translate-y-[4px] active:shadow-none transition-all"
-                            >
-                                STAND
-                            </button>
-                        </>
-                    )}
-                </div>
-            </div>
-
-            {/* Room Info */}
+            {/* Room Info (Top Left) */}
             <div className="absolute top-4 left-4 z-50">
-                <div className="bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-4 shadow-2xl flex flex-col gap-1 hover:bg-black/60 transition-colors cursor-pointer group"
+                <div className="bg-black/20 backdrop-blur-md border border-white/5 rounded-xl p-2 flex items-center gap-2 hover:bg-black/40 transition-colors cursor-pointer group"
                     onClick={() => {
                         navigator.clipboard.writeText(roomId);
-                        alert('Room Code copied!');
+                        alert("Copied!");
                     }}>
-                    <span className="text-white/40 text-xs font-bold tracking-widest uppercase">Room Code</span>
-                    <div className="flex items-center gap-3">
-                        <span className="text-3xl font-black text-emerald-400 tracking-wider font-mono group-hover:text-emerald-300">{roomId || '---'}</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white/20 group-hover:text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    <div className="bg-emerald-500/10 p-1.5 rounded-lg group-hover:bg-emerald-500/20 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                         </svg>
                     </div>
-                    <span className="text-[10px] text-white/20 group-hover:text-white/40">Click to copy</span>
+                    <div className="flex flex-col">
+                        <span className="text-[10px] text-white/30 font-bold uppercase tracking-widest hidden sm:block">Room Code</span>
+                        <span className="text-sm font-mono font-bold text-emerald-400 tracking-wider group-hover:scale-105 transition-transform origin-left">{roomId || '---'}</span>
+                    </div>
                 </div>
             </div>
         </div>

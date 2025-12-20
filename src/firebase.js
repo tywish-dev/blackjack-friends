@@ -4,14 +4,14 @@ import { getDatabase } from "firebase/database";
 // TODO: Replace with your Firebase project configuration
 // You can get this from the Firebase Console -> Project Settings -> General -> Your apps
 const firebaseConfig = {
-    apiKey: "AIzaSyCs1bj513Ra5y_PjgszfSBQHJ62RpYbF4o",
-    authDomain: "blackjack-friends.firebaseapp.com",
-    databaseURL: "https://blackjack-friends-default-rtdb.europe-west1.firebasedatabase.app",
-    projectId: "blackjack-friends",
-    storageBucket: "blackjack-friends.firebasestorage.app",
-    messagingSenderId: "320816606306",
-    appId: "1:320816606306:web:6defe34ad12fe22860353b",
-    measurementId: "G-HBEFK0SKY2"
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app = initializeApp(firebaseConfig);
